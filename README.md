@@ -50,7 +50,7 @@ image = Image.open("./docs/imgs/face_landmarks1.jpeg")
 base_model = "runwayml/stable-diffusion-v1-5"
 
 unet = UNet2DConditionModel.from_pretrained(
-    base_model, subfolder="unet"
+    base_model, subfolder="unet", torch_dtype=torch.float16
 )
 controllora: ControlLoRAModel = ControlLoRAModel.from_pretrained(
     "HighCWu/sd-controllora-face-landmarks", torch_dtype=torch.float16

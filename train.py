@@ -247,7 +247,7 @@ image = Image.open('<Your Conditioning Image Path>')
 base_model = "{base_model}"
 
 unet = UNet2DConditionModel.from_pretrained(
-    base_model, subfolder="unet"
+    base_model, subfolder="unet", torch_dtype=torch.float16
 )
 controllora: ControlLoRAModel = ControlLoRAModel.from_pretrained(
     "{repo_id}", torch_dtype=torch.float16
