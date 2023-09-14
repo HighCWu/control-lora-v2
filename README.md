@@ -8,6 +8,8 @@ The main idea is from my [ControlLoRA](https://github.com/HighCWu/ControlLoRA) a
 
 The current implementation idea is basically the same as sdxl's control-lora. But I mainly extend the ControlNetModel implementation from diffusers and use the user-friendly sd v1.5 for training. (The training method of sdxl control-lora could be easily used after modification according to [train_controlnet_sdxl.py](https://github.com/huggingface/diffusers/blob/main/examples/controlnet/train_controlnet_sdxl.py). My training code is also from [train_controlnet.py](https://github.com/huggingface/diffusers/blob/main/examples/controlnet/train_controlnet.py))
 
+Notice: I didn't train some extra layers like the norm layers (while stabilityai did). So this repo is more appropriate to the name of control-lora. When I completed this version, diffusers had not officially added lora compatibility to layers such as `conv_in`, `timestep_embedding`, so my version currently does not include their lora training.
+
 ## Why Version 2
 
 My first version of [ControlLoRA](https://github.com/HighCWu/ControlLoRA) directly used the spatial information after simple convolutions to perform LoRA offset on the linear layers in the attention layers. 

@@ -189,7 +189,7 @@ class ControlLoRAModel(ControlNetModel):
         self.mid_block.requires_grad_(False)
 
         # Initialize lora layer after unet layers been frozen
-        for attn_processor in self.modules():
+        for attn_processor in list(self.down_blocks.modules()) + list(self.mid_block.modules()):
             if lora_conv2d_rank > 0 and isinstance(attn_processor, LoRACompatibleConv):
                 in_features = attn_processor.in_channels
                 out_features = attn_processor.out_channels
