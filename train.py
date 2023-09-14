@@ -250,7 +250,7 @@ unet = UNet2DConditionModel.from_pretrained(
     base_model, subfolder="unet"
 )
 controllora: ControlLoRAModel = ControlLoRAModel.from_pretrained(
-    "HighCWu/{repo_id}", torch_dtype=torch.float16
+    "{repo_id}", torch_dtype=torch.float16
 )
 controllora.tie_weights(unet)
 
