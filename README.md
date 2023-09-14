@@ -1,6 +1,6 @@
 # ControlLoRA Version 2: A Lightweight Neural Network To Control Stable Diffusion Spatial Information Version 2
 
-ControlLoRA Version 2 is a neural network structure extended from Controlnet to control diffusion models by adding extra conditions. This checkpoint corresponds to the ControlLoRA conditioned on {conditioning_type or 'Unknown Input'}.
+ControlLoRA Version 2 is a neural network structure extended from Controlnet to control diffusion models by adding extra conditions.
 
 ControlLoRA Version 2 uses the same structure as Controlnet. But its core weight comes from UNet, unmodified. Only hint image encoding layers, linear lora layers and conv2d lora layers used for weight offset are trained.
 
