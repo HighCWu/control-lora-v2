@@ -47,8 +47,10 @@ from models.controllora import ControlLoRAModel
 
 image = Image.open("./docs/imgs/face_landmarks1.jpeg")
 
+base_model = "runwayml/stable-diffusion-v1-5"
+
 unet = UNet2DConditionModel.from_pretrained(
-    "runwayml/stable-diffusion-v1-5", subfolder="unet"
+    base_model, subfolder="unet"
 )
 controllora: ControlLoRAModel = ControlLoRAModel.from_pretrained(
     "HighCWu/sd-controllora-face-landmarks", torch_dtype=torch.float16
@@ -56,7 +58,7 @@ controllora: ControlLoRAModel = ControlLoRAModel.from_pretrained(
 controllora.tie_weights(unet)
 
 pipe = StableDiffusionControlNetPipeline.from_pretrained(
-    "runwayml/stable-diffusion-v1-5", unet=unet, controlnet=controllora, safety_checker=None, torch_dtype=torch.float16
+    base_model, unet=unet, controlnet=controllora, safety_checker=None, torch_dtype=torch.float16
 )
 
 pipe.scheduler = UniPCMultistepScheduler.from_config(pipe.scheduler.config)
@@ -73,7 +75,7 @@ image = pipe("Girl smiling, professional dslr photograph, high quality", image, 
 image.show()
 ```
 
-Replace the hint image and model paths according to your needs.
+Replace the hint image and model paths according to your needs. For example, you could apply controllora to anime by replace `runwayml/stable-diffusion-v1-5` to `ckpt/anything-v3-vae-swapped`.
 
 ## Discuss together
 
@@ -85,7 +87,7 @@ Discord: [AI Players - AI Dream Bakery](https://discord.gg/zcJszfPrZs)
 
 ## Citation
 
-    @software{wu2023controllora,
+    @software{wu2023controllorav2,
         author = {Wu Hecong},
         month = {9},
         title = {{ControlLoRA Version 2: A Lightweight Neural Network To Control Stable Diffusion Spatial Information Version 2}},

@@ -6,8 +6,10 @@ from models.controllora import ControlLoRAModel
 
 image = Image.open("./docs/imgs/face_landmarks1.jpeg")
 
+base_model = "ckpt/anything-v3-vae-swapped"
+
 unet = UNet2DConditionModel.from_pretrained(
-    "runwayml/stable-diffusion-v1-5", subfolder="unet", torch_dtype=torch.float16, cache_dir='.cache'
+    base_model, subfolder="unet", torch_dtype=torch.float16, cache_dir='.cache'
 )
 controllora: ControlLoRAModel = ControlLoRAModel.from_pretrained(
     "HighCWu/sd-controllora-face-landmarks", torch_dtype=torch.float16, cache_dir='.cache'
@@ -15,7 +17,7 @@ controllora: ControlLoRAModel = ControlLoRAModel.from_pretrained(
 controllora.tie_weights(unet)
 
 pipe = StableDiffusionControlNetPipeline.from_pretrained(
-    "runwayml/stable-diffusion-v1-5", unet=unet, controlnet=controllora, safety_checker=None, torch_dtype=torch.float16, cache_dir='.cache'
+    base_model, unet=unet, controlnet=controllora, safety_checker=None, torch_dtype=torch.float16, cache_dir='.cache'
 )
 
 pipe.scheduler = UniPCMultistepScheduler.from_config(pipe.scheduler.config)
@@ -27,6 +29,10 @@ pipe.enable_xformers_memory_efficient_attention()
 
 pipe.enable_model_cpu_offload()
 
-image = pipe("Girl smiling, professional dslr photograph, high quality", image, num_inference_steps=20).images[0]
+image = pipe(
+    "masterpiece, best quality, high quality, Girl smiling", 
+    image, 
+    negative_prompt="lowres, bad anatomy, text, error, extra digit, fewer digits, cropped, worst quality, low quality, normal quality, jpeg artifacts, signature, watermark, username, blurry",
+    num_inference_steps=20).images[0]
 
 image.show()

@@ -244,8 +244,10 @@ from models.controllora import ControlLoRAModel
 
 image = Image.open('<Your Conditioning Image Path>')
 
+base_model = "{base_model}"
+
 unet = UNet2DConditionModel.from_pretrained(
-    "{base_model}", subfolder="unet"
+    base_model, subfolder="unet"
 )
 controllora: ControlLoRAModel = ControlLoRAModel.from_pretrained(
     "HighCWu/{repo_id}", torch_dtype=torch.float16
@@ -253,7 +255,7 @@ controllora: ControlLoRAModel = ControlLoRAModel.from_pretrained(
 controllora.tie_weights(unet)
 
 pipe = StableDiffusionControlNetPipeline.from_pretrained(
-    "{base_model}", unet=unet, controlnet=controllora, safety_checker=None, torch_dtype=torch.float16
+    base_model, unet=unet, controlnet=controllora, safety_checker=None, torch_dtype=torch.float16
 )
 
 pipe.scheduler = UniPCMultistepScheduler.from_config(pipe.scheduler.config)
