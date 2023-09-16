@@ -164,6 +164,7 @@ cython_debug/
 tmp*
 multimodalart
 runwayml
+HighCWu
 wandb
 output
 ckpt

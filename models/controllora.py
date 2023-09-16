@@ -178,18 +178,30 @@ class ControlLoRAModel(ControlNetModel):
             addition_embed_type_num_heads = addition_embed_type_num_heads,
         )
 
-        self.conv_in.requires_grad_(False)
-        self.time_proj.requires_grad_(False)
-        self.time_embedding.requires_grad_(False)
+        # Initialize lora layers
+        modules = { name: layer for name, layer in self.named_modules() if name.split('.')[0] in self._skip_layers }
+        for name, attn_processor in list(modules.items()):
+            branches = name.split('.')
+            basename = branches.pop(-1)
+            parent_layer = modules.get('.'.join(branches), self)
+            if isinstance(attn_processor, nn.Conv2d) and not isinstance(attn_processor, LoRACompatibleConv):
+                attn_processor = LoRACompatibleConv(
+                    attn_processor.in_channels,
+                    attn_processor.out_channels,
+                    attn_processor.kernel_size,
+                    attn_processor.stride,
+                    attn_processor.padding,
+                    bias=False if attn_processor.bias is None else True
+                )
+                setattr(parent_layer, basename, attn_processor)
+            if isinstance(attn_processor, nn.Linear) and not isinstance(attn_processor, LoRACompatibleLinear):
+                attn_processor = LoRACompatibleLinear(
+                    attn_processor.in_features,
+                    attn_processor.out_features,
+                    bias=False if attn_processor.bias is None else True
+                )
+                setattr(parent_layer, basename, attn_processor)
 
-        if self.class_embedding:
-            self.class_embedding.requires_grad_(False)
-        
-        self.down_blocks.requires_grad_(False)
-        self.mid_block.requires_grad_(False)
-
-        # Initialize lora layer after unet layers been frozen
-        for attn_processor in list(self.down_blocks.modules()) + list(self.mid_block.modules()):
             if lora_conv2d_rank > 0 and isinstance(attn_processor, LoRACompatibleConv):
                 in_features = attn_processor.in_channels
                 out_features = attn_processor.out_channels
