@@ -22,5 +22,5 @@ accelerate launch train_cl.py \
  --checkpointing_steps=5000 \
  --validation_steps=5000 \
  --report_to wandb \
- --push_to_hub \
- --resume_from_checkpoint latest
+ --resume_from_checkpoint latest \
+ --push_to_hub
