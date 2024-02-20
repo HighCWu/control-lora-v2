@@ -1,31 +1,34 @@
 #!/usr/bin/env python
 # coding=utf-8
 
-import argparse
-import logging
-import math
 import os
+import math
 import random
 import shutil
+import logging
+import argparse
+from PIL import Image
 from pathlib import Path
+from tqdm.auto import tqdm
+from packaging import version
 
-import utils
-import accelerate
 import numpy as np
+
 import torch
 import torch.nn.functional as F
 import torch.utils.checkpoint
+from torchvision import transforms
+
 import transformers
+from transformers import AutoTokenizer, PretrainedConfig
+
+import accelerate
 from accelerate import Accelerator
 from accelerate.logging import get_logger
 from accelerate.utils import ProjectConfiguration, set_seed
+
 from datasets import load_dataset
 from huggingface_hub import create_repo, upload_folder
-from packaging import version
-from PIL import Image
-from torchvision import transforms
-from tqdm.auto import tqdm
-from transformers import AutoTokenizer, PretrainedConfig
 
 import diffusers
 from diffusers import (
@@ -39,7 +42,8 @@ from diffusers.optimization import get_scheduler
 from diffusers.utils import check_min_version, is_wandb_available
 from diffusers.utils.import_utils import is_xformers_available
 
-from models.control_lora import ControlLoRAModel, LatentControlLoRAModel
+import utils
+from models.control_lora import ControlLoRAModel
 
 
 if is_wandb_available():
@@ -611,10 +615,13 @@ def parse_args(input_args=None):
     )
 
     if input_args is not None:
-        args = parser.parse_args(input_args)
+        args, _ = parser.parse_known_args(input_args)
     else:
-        args = parser.parse_args()
+        args, _ = parser.parse_known_args()
 
+    return args
+
+def check_args(args):
     if args.dataset_name is None and args.train_data_dir is None:
         raise ValueError("Specify either `--dataset_name` or `--train_data_dir`")
 
@@ -646,9 +653,6 @@ def parse_args(input_args=None):
         raise ValueError(
             "`--resolution` must be divisible by 8 for consistently sized encoded images between the VAE and the control-lora encoder."
         )
-
-    return args
-
 
 def make_train_dataset(args, tokenizer, accelerator):
     # Get the datasets: you can either provide your own training and evaluation files (see below)
@@ -782,6 +786,7 @@ def collate_fn(examples):
 
 
 def main(args):
+    check_args(args)
     logging_dir = Path(args.output_dir, args.logging_dir)
 
     accelerator_project_config = ProjectConfiguration(project_dir=args.output_dir, logging_dir=logging_dir)
