@@ -21,11 +21,23 @@ Thanks to [Locon](https://github.com/KohakuBlueleaf/LyCORIS)'s idea, we could al
 
 ## Training
 
-See scripts in the `scripts` folder
+Run this command:
+```sh
+$ accelerate launch -m train.<TASK>
+```
+\<TASK\> means the module in the `train` folder. For example, you could run this command to launch the train script `train/face_landmarks.py`:
+```sh
+$ accelerate launch -m train.face_landmarks
+```
+
+Run a command with `--push_to_hub` to release your model to huggingface hub after training:
+```sh
+$ accelerate launch -m train.<TASK> --push_to_hub
+```
 
 ## Available Pretrained Models (WIP)
 
-[sd-controllora-face-landmarks](https://huggingface.co/HighCWu/sd-controllora-face-landmarks)
+[sd-control-lora-face-landmarks](https://huggingface.co/HighCWu/sd-control-lora-face-landmarks)
 
 ## Example
 
@@ -53,14 +65,15 @@ base_model = "runwayml/stable-diffusion-v1-5"
 unet = UNet2DConditionModel.from_pretrained(
     base_model, subfolder="unet", torch_dtype=torch.float16
 )
-controllora: ControlLoRAModel = ControlLoRAModel.from_pretrained(
-    "HighCWu/sd-controllora-face-landmarks", torch_dtype=torch.float16
+control_lora: ControlLoRAModel = ControlLoRAModel.from_pretrained(
+    "HighCWu/sd-control-lora-face-landmarks", torch_dtype=torch.float16
 )
-controllora.tie_weights(unet)
+control_lora.tie_weights(unet)
 
 pipe = StableDiffusionControlNetPipeline.from_pretrained(
-    base_model, unet=unet, controlnet=controllora, safety_checker=None, torch_dtype=torch.float16
+    base_model, unet=unet, controlnet=control_lora, safety_checker=None, torch_dtype=torch.float16
 )
+control_lora.bind_vae(pipe.vae)
 
 pipe.scheduler = UniPCMultistepScheduler.from_config(pipe.scheduler.config)
 

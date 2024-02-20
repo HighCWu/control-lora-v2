@@ -1,5 +1,3 @@
-from diffusers.pipelines.controlnet import StableDiffusionControlNetPipeline
-
 from datasets.download.download_manager import DownloadManager, is_relative_path
 
 
@@ -13,9 +11,3 @@ def patch_download_manager():
     DownloadManager._download = _download
 
 patch_download_manager()
-
-
-class StableDiffusionLatentControlNetPipeline(StableDiffusionControlNetPipeline):
-    def prepare_latents(self, batch_size, num_channels_latents, height, width, dtype, device, generator, latents=None):
-        height, width = height * self.vae_scale_factor, width * self.vae_scale_factor
-        return super().prepare_latents(batch_size, num_channels_latents, height, width, dtype, device, generator, latents)

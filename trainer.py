@@ -285,7 +285,7 @@ def parse_args(input_args=None):
         "--pretrained_model_name_or_path",
         type=str,
         default=None,
-        required=True,
+        # required=True,
         help="Path to pretrained model or model identifier from huggingface.co/models.",
     )
     parser.add_argument(
