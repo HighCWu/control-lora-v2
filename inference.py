@@ -18,6 +18,7 @@ control_lora.tie_weights(unet)
 pipe = StableDiffusionControlNetPipeline.from_pretrained(
     base_model, unet=unet, controlnet=control_lora, safety_checker=None, torch_dtype=torch.float16, cache_dir='.cache'
 )
+control_lora.bind_vae(pipe.vae)
 
 pipe.scheduler = UniPCMultistepScheduler.from_config(pipe.scheduler.config)
 

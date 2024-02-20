@@ -253,6 +253,7 @@ control_lora.tie_weights(unet)
 pipe = StableDiffusionControlNetPipeline.from_pretrained(
     base_model, unet=unet, controlnet=control_lora, safety_checker=None, torch_dtype=torch.float16
 )
+control_lora.bind_vae(pipe.vae)
 
 pipe.scheduler = UniPCMultistepScheduler.from_config(pipe.scheduler.config)
 
@@ -301,6 +302,12 @@ def parse_args(input_args=None):
         type=int,
         default=0,
         help=("The dimension of the Conv2d Module LoRA update matrices."),
+    )
+    parser.add_argument(
+        "--use_conditioning_latent", action="store_true", help="Whether or not to use conditioning latent as controlnet image."
+    )
+    parser.add_argument(
+        "--use_same_level_conditioning_latent", action="store_true", help="Whether or not to use conditioning latent with the same tensor size as the unet input."
     )
     parser.add_argument(
         "--revision",
@@ -846,7 +853,13 @@ def main(args):
         control_lora.tie_weights(unet)
     else:
         logger.info("Initializing control-lora weights from unet")
-        control_lora = ControlLoRAModel.from_unet(unet, lora_linear_rank=args.control_lora_linear_rank, lora_conv2d_rank=args.control_lora_conv2d_rank)
+        control_lora = ControlLoRAModel.from_unet(
+            unet, 
+            lora_linear_rank=args.control_lora_linear_rank, 
+            lora_conv2d_rank=args.control_lora_conv2d_rank,
+            use_conditioning_latent=args.use_conditioning_latent,
+            use_same_level_conditioning_latent=args.use_same_level_conditioning_latent
+        )
 
     # `accelerate` 0.16.0 will have better support for customized saving
     if version.parse(accelerate.__version__) >= version.parse("0.16.0"):
@@ -881,10 +894,11 @@ def main(args):
         accelerator.register_save_state_pre_hook(save_model_hook)
         accelerator.register_load_state_pre_hook(load_model_hook)
     
+    control_lora.train()
+    control_lora.bind_vae(vae)
     vae.requires_grad_(False)
     unet.requires_grad_(False)
     text_encoder.requires_grad_(False)
-    control_lora.train()
 
     if args.enable_xformers_memory_efficient_attention:
         if is_xformers_available():
