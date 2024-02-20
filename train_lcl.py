@@ -62,18 +62,18 @@ def image_grid(imgs, rows, cols):
     return grid
 
 
-def log_validation(vae, text_encoder, tokenizer, unet, control_lora, args, accelerator, weight_dtype, step):
+def log_validation(vae, text_encoder, tokenizer, unet, controllora, args, accelerator, weight_dtype, step):
     logger.info("Running validation... ")
 
-    control_lora = accelerator.unwrap_model(control_lora)
+    controllora = accelerator.unwrap_model(controllora)
 
-    pipeline = StableDiffusionControlNetPipeline.from_pretrained(
+    pipeline = utils.StableDiffusionLatentControlNetPipeline.from_pretrained(
         args.pretrained_model_name_or_path,
         vae=vae,
         text_encoder=text_encoder,
         tokenizer=tokenizer,
         unet=unet,
-        controlnet=control_lora,
+        controlnet=controllora,
         safety_checker=None,
         revision=args.revision,
         torch_dtype=weight_dtype, 
@@ -109,13 +109,19 @@ def log_validation(vae, text_encoder, tokenizer, unet, control_lora, args, accel
 
     for validation_prompt, validation_image in zip(validation_prompts, validation_images):
         validation_image = Image.open(validation_image).convert("RGB")
-
+        with torch.no_grad():
+            controllora_image = np.asarray(validation_image).transpose(2,0,1)[None] / 127.5 - 1
+            controllora_image = vae.encode(torch.from_numpy(controllora_image).to(device=vae.device, dtype=weight_dtype)).latent_dist.sample()
+            validation_image = np.uint8(((vae.decode(controllora_image).sample + 1) * 127.5).clamp(0, 255)[0].cpu().numpy().transpose(1,2,0))
+            validation_image = Image.fromarray(validation_image)
+            controllora_image = controllora_image * vae.config.scaling_factor
+        
         images = []
 
         for _ in range(args.num_validation_images):
             with torch.autocast("cuda"):
                 image = pipeline(
-                    validation_prompt, validation_image, num_inference_steps=20, generator=generator
+                    validation_prompt, controllora_image, num_inference_steps=20, generator=generator
                 ).images[0]
 
             images.append(image)
@@ -207,15 +213,15 @@ tags:
 - image-to-image
 - diffusers
 - controlnet
-- control-lora
+- controllora
 ---
     """
     model_card = f"""
-# ControlLoRA - {repo_id if conditioning_type is None else conditioning_type + ' Version'}
+# LatentControlLoRA - {repo_id if conditioning_type is None else conditioning_type + ' Version'}
 
-ControlLoRA is a neural network structure extended from Controlnet to control diffusion models by adding extra conditions. This checkpoint corresponds to the ControlLoRA conditioned on {conditioning_type or 'Unknown Input'}.
+LatentControlLoRA is a neural network structure extended from Controlnet to control diffusion models by adding extra conditions. This checkpoint corresponds to the ControlLoRA conditioned on {conditioning_type or 'Unknown Input'}.
 
-ControlLoRA uses the same structure as Controlnet. But its core weight comes from UNet, unmodified. Only hint image encoding layers, linear lora layers and conv2d lora layers used in weight offset are trained.
+ControlLoRA uses the similar structure to Controlnet but uses latents as conditional images. But its core weight comes from UNet, unmodified. Only hint image encoding layers, linear lora layers and conv2d lora layers used in weight offset are trained.
 
 The main idea is from my [ControlLoRA](https://github.com/HighCWu/ControlLoRA) and sdxl [control-lora](https://huggingface.co/stabilityai/control-lora).
 
@@ -233,10 +239,11 @@ $ cd control-lora-v2
 
 3. Run code:
 ```py
-import torch
 from PIL import Image
 from diffusers import StableDiffusionControlNetPipeline, UNet2DConditionModel, UniPCMultistepScheduler
-from models.control_lora import ControlLoRAModel
+import torch
+from PIL import Image
+from models.control_lora import LatentControlLoRAModel
 
 image = Image.open('<Your Conditioning Image Path>')
 
@@ -245,13 +252,13 @@ base_model = "{base_model}"
 unet = UNet2DConditionModel.from_pretrained(
     base_model, subfolder="unet", torch_dtype=torch.float16
 )
-control_lora: ControlLoRAModel = ControlLoRAModel.from_pretrained(
+controllora: LatentControlLoRAModel = LatentControlLoRAModel.from_pretrained(
     "{repo_id}", torch_dtype=torch.float16
 )
-control_lora.tie_weights(unet)
+controllora.tie_weights(unet)
 
 pipe = StableDiffusionControlNetPipeline.from_pretrained(
-    base_model, unet=unet, controlnet=control_lora, safety_checker=None, torch_dtype=torch.float16
+    base_model, unet=unet, controlnet=controllora, safety_checker=None, torch_dtype=torch.float16
 )
 
 pipe.scheduler = UniPCMultistepScheduler.from_config(pipe.scheduler.config)
@@ -284,20 +291,20 @@ def parse_args(input_args=None):
         help="Path to pretrained model or model identifier from huggingface.co/models.",
     )
     parser.add_argument(
-        "--control_lora_model_name_or_path",
+        "--controllora_model_name_or_path",
         type=str,
         default=None,
-        help="Path to pretrained control_lora model or model identifier from huggingface.co/models."
-        " If not specified control_lora weights are initialized randomly.",
+        help="Path to pretrained controllora model or model identifier from huggingface.co/models."
+        " If not specified controllora weights are initialized randomly.",
     )
     parser.add_argument(
-        "--control_lora_linear_rank",
+        "--controllora_linear_rank",
         type=int,
         default=4,
         help=("The dimension of the Linear Module LoRA update matrices."),
     )
     parser.add_argument(
-        "--control_lora_conv2d_rank",
+        "--controllora_conv2d_rank",
         type=int,
         default=0,
         help=("The dimension of the Conv2d Module LoRA update matrices."),
@@ -321,7 +328,7 @@ def parse_args(input_args=None):
     parser.add_argument(
         "--output_dir",
         type=str,
-        default="control-lora-model",
+        default="controllora-model",
         help="The output directory where the model predictions and checkpoints will be written.",
     )
     parser.add_argument(
@@ -525,7 +532,7 @@ def parse_args(input_args=None):
         "--conditioning_image_column",
         type=str,
         default="conditioning_image",
-        help="The column of the dataset containing the control-lora conditioning image.",
+        help="The column of the dataset containing the controllora conditioning image.",
     )
     parser.add_argument(
         "--caption_column",
@@ -565,7 +572,7 @@ def parse_args(input_args=None):
         default=None,
         nargs="+",
         help=(
-            "A set of paths to the control-lora conditioning image be evaluated every `--validation_steps`"
+            "A set of paths to the controllora conditioning image be evaluated every `--validation_steps`"
             " and logged to `--report_to`. Provide either a matching number of `--validation_prompt`s, a"
             " a single `--validation_prompt` to be used with all `--validation_image`s, or a single"
             " `--validation_image` that will be used with all `--validation_prompt`s."
@@ -590,7 +597,7 @@ def parse_args(input_args=None):
     parser.add_argument(
         "--tracker_project_name",
         type=str,
-        default="train_control_lora",
+        default="train_controllora",
         help=(
             "The `project_name` argument passed to Accelerator.init_trackers for"
             " more information see https://huggingface.co/docs/accelerate/v0.17.0/en/package_reference/accelerator#accelerate.Accelerator"
@@ -637,7 +644,7 @@ def parse_args(input_args=None):
 
     if args.resolution % 8 != 0:
         raise ValueError(
-            "`--resolution` must be divisible by 8 for consistently sized encoded images between the VAE and the control-lora encoder."
+            "`--resolution` must be divisible by 8 for consistently sized encoded images between the VAE and the controllora encoder."
         )
 
     return args
@@ -733,6 +740,7 @@ def make_train_dataset(args, tokenizer, accelerator):
             transforms.Resize(args.resolution, interpolation=transforms.InterpolationMode.BILINEAR),
             transforms.CenterCrop(args.resolution),
             transforms.ToTensor(),
+            transforms.Normalize([0.5], [0.5]),
         ]
     )
 
@@ -839,14 +847,14 @@ def main(args):
         args.pretrained_model_name_or_path, subfolder="unet", revision=args.revision, cache_dir=args.cache_dir
     )
 
-    control_lora: ControlLoRAModel
-    if args.control_lora_model_name_or_path:
-        logger.info("Loading existing control-lora weights")
-        control_lora = ControlLoRAModel.from_pretrained(args.control_lora_model_name_or_path, cache_dir=args.cache_dir)
+    control_lora: LatentControlLoRAModel
+    if args.controllora_model_name_or_path:
+        logger.info("Loading existing controllora weights")
+        control_lora = LatentControlLoRAModel.from_pretrained(args.controllora_model_name_or_path, cache_dir=args.cache_dir)
         control_lora.tie_weights(unet)
     else:
-        logger.info("Initializing control-lora weights from unet")
-        control_lora = ControlLoRAModel.from_unet(unet, lora_linear_rank=args.control_lora_linear_rank, lora_conv2d_rank=args.control_lora_conv2d_rank)
+        logger.info("Initializing controllora weights from unet")
+        control_lora = LatentControlLoRAModel.from_unet(unet, lora_linear_rank=args.controllora_linear_rank, lora_conv2d_rank=args.controllora_conv2d_rank)
 
     # `accelerate` 0.16.0 will have better support for customized saving
     if version.parse(accelerate.__version__) >= version.parse("0.16.0"):
@@ -857,9 +865,9 @@ def main(args):
 
                 while len(weights) > 0:
                     weights.pop()
-                    model: ControlLoRAModel = models[i]
+                    model: LatentControlLoRAModel = models[i]
 
-                    sub_dir = "control-lora"
+                    sub_dir = "latentcontrollora"
                     model.save_pretrained(os.path.join(output_dir, sub_dir))
 
                     i -= 1
@@ -867,10 +875,10 @@ def main(args):
         def load_model_hook(models, input_dir):
             while len(models) > 0:
                 # pop models so that they are not loaded again
-                model: ControlLoRAModel = models.pop()
+                model: LatentControlLoRAModel = models.pop()
 
                 # load diffusers style into model
-                load_model = ControlLoRAModel.from_pretrained(input_dir, subfolder="control-lora")
+                load_model = LatentControlLoRAModel.from_pretrained(input_dir, subfolder="latentcontrollora")
                 model.register_to_config(**load_model.config)
 
                 model.load_state_dict(load_model.state_dict())
@@ -1066,7 +1074,8 @@ def main(args):
                 latents = vae.encode(batch["pixel_values"].to(dtype=weight_dtype)).latent_dist.sample()
                 latents = latents * vae.config.scaling_factor
 
-                controllora_image = batch["conditioning_pixel_values"].to(dtype=weight_dtype)
+                controllora_image = vae.encode(batch["conditioning_pixel_values"].to(dtype=weight_dtype)).latent_dist.sample()
+                controllora_image = controllora_image * vae.config.scaling_factor
 
                 # Sample noise that we'll add to the latents
                 noise = torch.randn_like(latents)
