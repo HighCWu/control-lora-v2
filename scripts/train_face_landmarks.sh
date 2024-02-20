@@ -1,6 +1,6 @@
 cd $(dirname "$0")/..
 
-accelerate launch train.py \
+accelerate launch trainer.py \
  --cache_dir=".cache" \
  --pretrained_model_name_or_path="runwayml/stable-diffusion-v1-5" \
  --output_dir="output/sd-control-lora-face-landmarks" \
