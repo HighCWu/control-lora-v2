@@ -9,6 +9,7 @@ import random
 import shutil
 from pathlib import Path
 
+import utils
 import accelerate
 import numpy as np
 import torch
@@ -38,14 +39,14 @@ from diffusers.optimization import get_scheduler
 from diffusers.utils import check_min_version, is_wandb_available
 from diffusers.utils.import_utils import is_xformers_available
 
-from models.controllora import ControlLoRAModel
+from models.control_lora import ControlLoRAModel, LatentControlLoRAModel
 
 
 if is_wandb_available():
     import wandb
 
 # Will error if the minimal version of diffusers is not installed. Remove at your own risks.
-check_min_version("0.21.0.dev0")
+check_min_version("0.26.3")
 
 logger = get_logger(__name__)
 
@@ -61,10 +62,10 @@ def image_grid(imgs, rows, cols):
     return grid
 
 
-def log_validation(vae, text_encoder, tokenizer, unet, controllora, args, accelerator, weight_dtype, step):
+def log_validation(vae, text_encoder, tokenizer, unet, control_lora, args, accelerator, weight_dtype, step):
     logger.info("Running validation... ")
 
-    controllora = accelerator.unwrap_model(controllora)
+    control_lora = accelerator.unwrap_model(control_lora)
 
     pipeline = StableDiffusionControlNetPipeline.from_pretrained(
         args.pretrained_model_name_or_path,
@@ -72,7 +73,7 @@ def log_validation(vae, text_encoder, tokenizer, unet, controllora, args, accele
         text_encoder=text_encoder,
         tokenizer=tokenizer,
         unet=unet,
-        controlnet=controllora,
+        controlnet=control_lora,
         safety_checker=None,
         revision=args.revision,
         torch_dtype=weight_dtype, 
@@ -174,10 +175,6 @@ def import_model_class_from_model_name_or_path(pretrained_model_name_or_path: st
         from transformers import CLIPTextModel
 
         return CLIPTextModel
-    elif model_class == "RobertaSeriesModelWithTransformation":
-        from diffusers.pipelines.alt_diffusion.modeling_roberta_series import RobertaSeriesModelWithTransformation
-
-        return RobertaSeriesModelWithTransformation
     else:
         raise ValueError(f"{model_class} is not supported.")
 
@@ -210,7 +207,7 @@ tags:
 - image-to-image
 - diffusers
 - controlnet
-- controllora
+- control-lora
 ---
     """
     model_card = f"""
@@ -240,7 +237,7 @@ from PIL import Image
 from diffusers import StableDiffusionControlNetPipeline, UNet2DConditionModel, UniPCMultistepScheduler
 import torch
 from PIL import Image
-from models.controllora import ControlLoRAModel
+from models.control_lora import ControlLoRAModel
 
 image = Image.open('<Your Conditioning Image Path>')
 
@@ -249,13 +246,13 @@ base_model = "{base_model}"
 unet = UNet2DConditionModel.from_pretrained(
     base_model, subfolder="unet", torch_dtype=torch.float16
 )
-controllora: ControlLoRAModel = ControlLoRAModel.from_pretrained(
+control_lora: ControlLoRAModel = ControlLoRAModel.from_pretrained(
     "{repo_id}", torch_dtype=torch.float16
 )
-controllora.tie_weights(unet)
+control_lora.tie_weights(unet)
 
 pipe = StableDiffusionControlNetPipeline.from_pretrained(
-    base_model, unet=unet, controlnet=controllora, safety_checker=None, torch_dtype=torch.float16
+    base_model, unet=unet, controlnet=control_lora, safety_checker=None, torch_dtype=torch.float16
 )
 
 pipe.scheduler = UniPCMultistepScheduler.from_config(pipe.scheduler.config)
@@ -288,20 +285,20 @@ def parse_args(input_args=None):
         help="Path to pretrained model or model identifier from huggingface.co/models.",
     )
     parser.add_argument(
-        "--controllora_model_name_or_path",
+        "--control_lora_model_name_or_path",
         type=str,
         default=None,
-        help="Path to pretrained controllora model or model identifier from huggingface.co/models."
-        " If not specified controllora weights are initialized randomly.",
+        help="Path to pretrained control_lora model or model identifier from huggingface.co/models."
+        " If not specified control_lora weights are initialized randomly.",
     )
     parser.add_argument(
-        "--controllora_linear_rank",
+        "--control_lora_linear_rank",
         type=int,
         default=4,
         help=("The dimension of the Linear Module LoRA update matrices."),
     )
     parser.add_argument(
-        "--controllora_conv2d_rank",
+        "--control_lora_conv2d_rank",
         type=int,
         default=0,
         help=("The dimension of the Conv2d Module LoRA update matrices."),
@@ -325,7 +322,7 @@ def parse_args(input_args=None):
     parser.add_argument(
         "--output_dir",
         type=str,
-        default="controllora-model",
+        default="control-lora-model",
         help="The output directory where the model predictions and checkpoints will be written.",
     )
     parser.add_argument(
@@ -529,7 +526,7 @@ def parse_args(input_args=None):
         "--conditioning_image_column",
         type=str,
         default="conditioning_image",
-        help="The column of the dataset containing the controllora conditioning image.",
+        help="The column of the dataset containing the control-lora conditioning image.",
     )
     parser.add_argument(
         "--caption_column",
@@ -569,7 +566,7 @@ def parse_args(input_args=None):
         default=None,
         nargs="+",
         help=(
-            "A set of paths to the controllora conditioning image be evaluated every `--validation_steps`"
+            "A set of paths to the control-lora conditioning image be evaluated every `--validation_steps`"
             " and logged to `--report_to`. Provide either a matching number of `--validation_prompt`s, a"
             " a single `--validation_prompt` to be used with all `--validation_image`s, or a single"
             " `--validation_image` that will be used with all `--validation_prompt`s."
@@ -594,7 +591,7 @@ def parse_args(input_args=None):
     parser.add_argument(
         "--tracker_project_name",
         type=str,
-        default="train_controllora",
+        default="train_control_lora",
         help=(
             "The `project_name` argument passed to Accelerator.init_trackers for"
             " more information see https://huggingface.co/docs/accelerate/v0.17.0/en/package_reference/accelerator#accelerate.Accelerator"
@@ -641,7 +638,7 @@ def parse_args(input_args=None):
 
     if args.resolution % 8 != 0:
         raise ValueError(
-            "`--resolution` must be divisible by 8 for consistently sized encoded images between the VAE and the controllora encoder."
+            "`--resolution` must be divisible by 8 for consistently sized encoded images between the VAE and the control-lora encoder."
         )
 
     return args
@@ -843,14 +840,14 @@ def main(args):
         args.pretrained_model_name_or_path, subfolder="unet", revision=args.revision, cache_dir=args.cache_dir
     )
 
-    controllora: ControlLoRAModel
-    if args.controllora_model_name_or_path:
-        logger.info("Loading existing controllora weights")
-        controllora = ControlLoRAModel.from_pretrained(args.controllora_model_name_or_path, cache_dir=args.cache_dir)
-        controllora.tie_weights(unet)
+    control_lora: ControlLoRAModel
+    if args.control_lora_model_name_or_path:
+        logger.info("Loading existing control-lora weights")
+        control_lora = ControlLoRAModel.from_pretrained(args.control_lora_model_name_or_path, cache_dir=args.cache_dir)
+        control_lora.tie_weights(unet)
     else:
-        logger.info("Initializing controllora weights from unet")
-        controllora = ControlLoRAModel.from_unet(unet, lora_linear_rank=args.controllora_linear_rank, lora_conv2d_rank=args.controllora_conv2d_rank)
+        logger.info("Initializing control-lora weights from unet")
+        control_lora = ControlLoRAModel.from_unet(unet, lora_linear_rank=args.control_lora_linear_rank, lora_conv2d_rank=args.control_lora_conv2d_rank)
 
     # `accelerate` 0.16.0 will have better support for customized saving
     if version.parse(accelerate.__version__) >= version.parse("0.16.0"):
@@ -863,7 +860,7 @@ def main(args):
                     weights.pop()
                     model: ControlLoRAModel = models[i]
 
-                    sub_dir = "controllora"
+                    sub_dir = "control-lora"
                     model.save_pretrained(os.path.join(output_dir, sub_dir))
 
                     i -= 1
@@ -874,7 +871,7 @@ def main(args):
                 model: ControlLoRAModel = models.pop()
 
                 # load diffusers style into model
-                load_model = ControlLoRAModel.from_pretrained(input_dir, subfolder="controllora")
+                load_model = ControlLoRAModel.from_pretrained(input_dir, subfolder="control-lora")
                 model.register_to_config(**load_model.config)
 
                 model.load_state_dict(load_model.state_dict())
@@ -888,7 +885,7 @@ def main(args):
     vae.requires_grad_(False)
     unet.requires_grad_(False)
     text_encoder.requires_grad_(False)
-    controllora.train()
+    control_lora.train()
 
     if args.enable_xformers_memory_efficient_attention:
         if is_xformers_available():
@@ -900,12 +897,12 @@ def main(args):
                     "xFormers 0.0.16 cannot be used for training in some GPUs. If you observe problems during training, please update xFormers to at least 0.0.17. See https://huggingface.co/docs/diffusers/main/en/optimization/xformers for more details."
                 )
             unet.enable_xformers_memory_efficient_attention()
-            controllora.enable_xformers_memory_efficient_attention()
+            control_lora.enable_xformers_memory_efficient_attention()
         else:
             raise ValueError("xformers is not available. Make sure it is installed correctly")
 
     if args.gradient_checkpointing:
-        controllora.enable_gradient_checkpointing()
+        control_lora.enable_gradient_checkpointing()
 
     # Check that all trainable models are in full precision
     low_precision_error_string = (
@@ -913,9 +910,9 @@ def main(args):
         " doing mixed precision training, copy of the weights should still be float32."
     )
 
-    if accelerator.unwrap_model(controllora).dtype != torch.float32:
+    if accelerator.unwrap_model(control_lora).dtype != torch.float32:
         raise ValueError(
-            f"ControlLoRA loaded as datatype {accelerator.unwrap_model(controllora).dtype}. {low_precision_error_string}"
+            f"ControlLoRA loaded as datatype {accelerator.unwrap_model(control_lora).dtype}. {low_precision_error_string}"
         )
 
     # Enable TF32 for faster training on Ampere GPUs,
@@ -942,7 +939,7 @@ def main(args):
         optimizer_class = torch.optim.AdamW
 
     # Optimizer creation
-    params_to_optimize = [param for param in controllora.parameters() if param.requires_grad]
+    params_to_optimize = [param for param in control_lora.parameters() if param.requires_grad]
     optimizer = optimizer_class(
         params_to_optimize,
         lr=args.learning_rate,
@@ -978,8 +975,8 @@ def main(args):
     )
 
     # Prepare everything with our `accelerator`.
-    controllora, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
-        controllora, optimizer, train_dataloader, lr_scheduler
+    control_lora, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(
+        control_lora, optimizer, train_dataloader, lr_scheduler
     )
 
     # For mixed precision training we cast the text_encoder and vae weights to half-precision
@@ -1065,10 +1062,12 @@ def main(args):
     image_logs = None
     for epoch in range(first_epoch, args.num_train_epochs):
         for step, batch in enumerate(train_dataloader):
-            with accelerator.accumulate(controllora):
+            with accelerator.accumulate(control_lora):
                 # Convert images to latent space
                 latents = vae.encode(batch["pixel_values"].to(dtype=weight_dtype)).latent_dist.sample()
                 latents = latents * vae.config.scaling_factor
+
+                controllora_image = batch["conditioning_pixel_values"].to(dtype=weight_dtype)
 
                 # Sample noise that we'll add to the latents
                 noise = torch.randn_like(latents)
@@ -1084,9 +1083,7 @@ def main(args):
                 # Get the text embedding for conditioning
                 encoder_hidden_states = text_encoder(batch["input_ids"])[0]
 
-                controllora_image = batch["conditioning_pixel_values"].to(dtype=weight_dtype)
-
-                down_block_res_samples, mid_block_res_sample = controllora(
+                down_block_res_samples, mid_block_res_sample = control_lora(
                     noisy_latents,
                     timesteps,
                     encoder_hidden_states=encoder_hidden_states,
@@ -1116,7 +1113,7 @@ def main(args):
 
                 accelerator.backward(loss)
                 if accelerator.sync_gradients:
-                    params_to_clip = controllora.parameters()
+                    params_to_clip = control_lora.parameters()
                     accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
                 optimizer.step()
                 lr_scheduler.step()
@@ -1128,7 +1125,7 @@ def main(args):
                 global_step += 1
 
                 if accelerator.is_main_process:
-                    if global_step % args.checkpointing_steps == 0:
+                    if global_step == 1 or global_step % args.checkpointing_steps == 0:
                         # _before_ saving state, check if this save would set us over the `checkpoints_total_limit`
                         if args.checkpoints_total_limit is not None:
                             checkpoints = os.listdir(args.output_dir)
@@ -1153,13 +1150,13 @@ def main(args):
                         accelerator.save_state(save_path)
                         logger.info(f"Saved state to {save_path}")
 
-                    if args.validation_prompt is not None and global_step % args.validation_steps == 0:
+                    if args.validation_prompt is not None and (global_step == 1 or global_step % args.validation_steps == 0):
                         image_logs = log_validation(
                             vae,
                             text_encoder,
                             tokenizer,
                             unet,
-                            controllora,
+                            control_lora,
                             args,
                             accelerator,
                             weight_dtype,
@@ -1181,15 +1178,15 @@ def main(args):
             text_encoder,
             tokenizer,
             unet,
-            controllora,
+            control_lora,
             args,
             accelerator,
             weight_dtype,
             -1,
         )
 
-        controllora = accelerator.unwrap_model(controllora)
-        controllora.save_pretrained(args.output_dir)
+        control_lora = accelerator.unwrap_model(control_lora)
+        control_lora.save_pretrained(args.output_dir)
 
         if args.push_to_hub:
             save_model_card(

@@ -41,11 +41,10 @@ $ cd control-lora-v2
 
 3. Run code:
 ```py
-from PIL import Image
-from diffusers import StableDiffusionControlNetPipeline, UNet2DConditionModel, UniPCMultistepScheduler
 import torch
 from PIL import Image
-from models.controllora import ControlLoRAModel
+from diffusers import StableDiffusionControlNetPipeline, UNet2DConditionModel, UniPCMultistepScheduler
+from models.control_lora import ControlLoRAModel
 
 image = Image.open("./docs/imgs/face_landmarks1.jpeg")
 
