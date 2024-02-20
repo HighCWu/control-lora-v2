@@ -194,7 +194,7 @@ class ControlLoRAModel(ControlNetModel):
         self.use_same_level_conditioning_latent = use_same_level_conditioning_latent
         if use_same_level_conditioning_latent:
             # Use latent as cond
-            self.controlnet_cond_embedding = None
+            del self.controlnet_cond_embedding
             self.controlnet_cond_embedding = lambda _: 0
             self.config['use_conditioning_latent'] = False
 
