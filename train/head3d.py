@@ -22,6 +22,7 @@ config.image_column = "jpg"
 config.caption_column = "txt"
 config.num_validation_samples = 3
 config.conditioning_type_name = "head3d"
+config.proportion_empty_prompts = 0.5
 
 config.tracker_project_name = f"sd-control-lora-{config.conditioning_type_name}"
 config.output_dir = f"output/{config.tracker_project_name}"
