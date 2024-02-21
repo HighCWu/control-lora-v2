@@ -25,9 +25,9 @@ Run this command:
 ```sh
 $ accelerate launch -m train.<TASK>
 ```
-\<TASK\> means the module in the `train` folder. For example, you could run this command to launch the train script `train/face_landmarks.py`:
+\<TASK\> means the module in the `train` folder. For example, you could run this command to launch the train script `train/tutorial.py`:
 ```sh
-$ accelerate launch -m train.face_landmarks
+$ accelerate launch -m train.tutorial
 ```
 
 Run a command with `--push_to_hub` to release your model to huggingface hub after training:

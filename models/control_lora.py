@@ -34,6 +34,317 @@ def _tie_weights(source_module: nn.Module, target_module: nn.Module):
         setattr(target_parent_module, base_weight_name, weight)
 
 
+class DoRAConv2dLayer(LoRAConv2dLayer):
+    r"""
+    A convolutional layer that is used with DoRA.
+
+    Parameters:
+        in_features (`int`):
+            Number of input features.
+        out_features (`int`):
+            Number of output features.
+        rank (`int`, `optional`, defaults to 4):
+            The rank of the LoRA layer.
+        kernel_size (`int` or `tuple` of two `int`, `optional`, defaults to 1):
+            The kernel size of the convolution.
+        stride (`int` or `tuple` of two `int`, `optional`, defaults to 1):
+            The stride of the convolution.
+        padding (`int` or `tuple` of two `int` or `str`, `optional`, defaults to 0):
+            The padding of the convolution.
+        network_alpha (`float`, `optional`, defaults to `None`):
+            The value of the network alpha used for stable learning and preventing underflow. This value has the same
+            meaning as the `--network_alpha` option in the kohya-ss trainer script. See
+            https://github.com/darkstorm2150/sd-scripts/blob/main/docs/train_network_README-en.md#execute-learning
+    """
+
+    def __init__(
+        self,
+        in_features: int,
+        out_features: int,
+        rank: int = 4,
+        kernel_size: Union[int, Tuple[int, int]] = (1, 1),
+        stride: Union[int, Tuple[int, int]] = (1, 1),
+        padding: Union[int, Tuple[int, int], str] = 0,
+        network_alpha: Optional[float] = None,
+    ):
+        super().__init__(
+            in_features,
+            out_features,
+            rank=rank,
+            kernel_size=kernel_size,
+            stride=stride,
+            padding=padding,
+            network_alpha=network_alpha
+        )
+
+        self.magnitude = nn.Parameter(torch.ones(1, in_features, *self.down.kernel_size))
+        self.magnitude_initialized = False
+        self.magnitude_initial_value = None
+
+    def forward(self, w_orig: torch.Tensor, scale: float = 1.0) -> torch.Tensor:
+        if not self.magnitude_initialized:
+            w_norm: torch.Tensor = w_orig.flatten(start_dim=1).norm(p=2, dim=0, keepdim=True)
+            self.magnitude.data[:] = w_norm.view_as(self.magnitude)
+            self.magnitude_initialized = True
+        
+        w_up = self.up.weight
+        w_down = self.down.weight
+
+        if self.network_alpha is not None:
+            w_up = w_up * self.network_alpha / self.rank
+
+        lora = torch.mm(w_up.flatten(start_dim=1), w_down.flatten(start_dim=1))
+        adapted = w_orig.flatten(start_dim=1) + lora
+
+        column_norm: torch.Tensor = adapted.norm(p=2, dim=0, keepdim=True)
+        norm_lora = lora / column_norm.detach()
+
+        return scale * self.magnitude * norm_lora.view_as(w_orig)
+    
+    def state_dict(self, *args, **kwargs):
+        state_dict: Mapping[str, Any] = super().state_dict(*args, **kwargs)
+        new_state_dict = OrderedDict()
+        for k, v in state_dict.items():
+            if k != 'magnitude' or self.magnitude_initialized:
+                new_state_dict[k] = v
+        return new_state_dict
+    
+    def load_state_dict(self, state_dict: Mapping[str, Any], strict: bool = True):
+        new_state_dict = OrderedDict(state_dict)
+        default_state_dict = super().state_dict()
+        if 'magnitude' not in state_dict:
+            new_state_dict['magnitude'] = default_state_dict['magnitude']
+        incompatible_keys = super().load_state_dict(new_state_dict, strict)
+        if 'magnitude' in state_dict:
+            self.magnitude_initialized = True
+        return incompatible_keys
+
+
+class DoRACompatibleConv(LoRACompatibleConv):
+    """
+    A convolutional layer that can be used with DoRA.
+    """
+    lora_layer: DoRAConv2dLayer
+
+    def _fuse_lora(self, lora_scale: float = 1.0, safe_fusing: bool = False):
+        if self.lora_layer is None:
+            return
+
+        dtype, device = self.weight.data.dtype, self.weight.data.device
+
+        w_orig = self.weight.data.float()
+        w_up = self.lora_layer.up.weight.data.float()
+        w_down = self.lora_layer.down.weight.data.float()
+        w_magnitude = self.lora_layer.magnitude.data.float()
+
+        if self.lora_layer.network_alpha is not None:
+            w_up = w_up * self.lora_layer.network_alpha / self.lora_layer.rank
+
+        lora = torch.mm(w_up.flatten(start_dim=1), w_down.flatten(start_dim=1))
+        adapted = w_orig.flatten(start_dim=1) + lora
+
+        column_norm: torch.Tensor = adapted.norm(p=2, dim=0, keepdim=True)
+        norm_lora = lora / column_norm.detach()
+        fused_weight = w_orig + lora_scale * w_magnitude * norm_lora.view_as(w_orig)
+
+        if safe_fusing and torch.isnan(fused_weight).any().item():
+            raise ValueError(
+                "This DoRA weight seems to be broken. "
+                f"Encountered NaN values when trying to fuse DoRA weights for {self}."
+                "DoRA weights will not be fused."
+            )
+
+        self.weight.data = fused_weight.to(device=device, dtype=dtype)
+
+        # we can drop the lora layer now
+        self.lora_layer = None
+
+        # offload the up and down matrices to CPU to not blow the memory
+        self.w_up = w_up.cpu()
+        self.w_down = w_down.cpu()
+        self.w_magnitude = w_magnitude.cpu()
+        self.w_norm_lora = norm_lora.cpu()
+        self._lora_scale = lora_scale
+
+    def _unfuse_lora(self):
+        if not (getattr(self, "w_up", None) is not None and getattr(self, "w_down", None) is not None and 
+                getattr(self, "w_magnitude", None) is not None and getattr(self, "w_norm_lora", None) is not None):
+            return
+
+        fused_weight = self.weight.data
+        dtype, device = fused_weight.data.dtype, fused_weight.data.device
+
+        w_magnitude: torch.Tensor = self.w_magnitude.to(device).float()
+        w_norm_lora: torch.Tensor = self.w_norm_lora.to(device).float()
+
+        unfused_weight = self.weight - self._lora_scale * w_magnitude * w_norm_lora.view_as(self.weight)
+        self.weight.data = unfused_weight.to(device=device, dtype=dtype)
+
+        self.w_up = None
+        self.w_down = None
+        self.w_magnitude = None
+        self.w_norm_lora = None
+
+    def forward(self, hidden_states: torch.Tensor, scale: float = 1.0) -> torch.Tensor:
+        weight = self.weight if self.lora_layer is None else self.weight + scale * self.lora_layer(self.weight)
+
+        return F.conv2d(
+            hidden_states, weight, self.bias, self.stride, self.padding, self.dilation, self.groups
+        )
+
+
+class DoRALinearLayer(LoRALinearLayer):
+    r"""
+    A linear layer that is used with DoRA.
+
+    Parameters:
+        in_features (`int`):
+            Number of input features.
+        out_features (`int`):
+            Number of output features.
+        rank (`int`, `optional`, defaults to 4):
+            The rank of the LoRA layer.
+        network_alpha (`float`, `optional`, defaults to `None`):
+            The value of the network alpha used for stable learning and preventing underflow. This value has the same
+            meaning as the `--network_alpha` option in the kohya-ss trainer script. See
+            https://github.com/darkstorm2150/sd-scripts/blob/main/docs/train_network_README-en.md#execute-learning
+        device (`torch.device`, `optional`, defaults to `None`):
+            The device to use for the layer's weights.
+        dtype (`torch.dtype`, `optional`, defaults to `None`):
+            The dtype to use for the layer's weights.
+    """
+
+    def __init__(
+        self,
+        in_features: int,
+        out_features: int,
+        rank: int = 4,
+        network_alpha: Optional[float] = None,
+        device: Optional[Union[torch.device, str]] = None,
+        dtype: Optional[torch.dtype] = None,
+    ):
+        super().__init__(
+            in_features,
+            out_features,
+            rank=rank,
+            network_alpha=network_alpha,
+            device=device,
+            dtype=dtype
+        )
+
+        self.magnitude = nn.Parameter(torch.ones(1, in_features))
+        self.magnitude_initialized = False
+
+    def forward(self, w_orig: torch.Tensor, scale: float = 1.0) -> torch.Tensor:
+        if not self.magnitude_initialized:
+            w_norm: torch.Tensor = w_orig.norm(p=2, dim=0, keepdim=True)
+            self.magnitude.data[:] = w_norm
+            self.magnitude_initialized = True
+        
+        w_up = self.up.weight
+        w_down = self.down.weight
+
+        if self.network_alpha is not None:
+            w_up = w_up * self.network_alpha / self.rank
+
+        lora = torch.mm(w_up, w_down)
+        adapted = w_orig + lora
+
+        column_norm: torch.Tensor = adapted.norm(p=2, dim=0, keepdim=True)
+        norm_lora = lora / column_norm.detach()
+
+        return scale * self.magnitude * norm_lora
+    
+    def state_dict(self, *args, **kwargs):
+        state_dict: Mapping[str, Any] = super().state_dict(*args, **kwargs)
+        new_state_dict = OrderedDict()
+        for k, v in state_dict.items():
+            if k != 'magnitude' or self.magnitude_initialized:
+                new_state_dict[k] = v
+        return new_state_dict
+    
+    def load_state_dict(self, state_dict: Mapping[str, Any], strict: bool = True):
+        new_state_dict = OrderedDict(state_dict)
+        default_state_dict = super().state_dict()
+        if 'magnitude' not in state_dict:
+            new_state_dict['magnitude'] = default_state_dict['magnitude']
+        incompatible_keys = super().load_state_dict(new_state_dict, strict)
+        if 'magnitude' in state_dict:
+            self.magnitude_initialized = True
+        return incompatible_keys
+
+
+class DoRACompatibleLinear(LoRACompatibleLinear):
+    """
+    A Linear layer that can be used with DoRA.
+    """
+    lora_layer: DoRALinearLayer
+
+    def _fuse_lora(self, lora_scale: float = 1.0, safe_fusing: bool = False):
+        if self.lora_layer is None:
+            return
+
+        dtype, device = self.weight.data.dtype, self.weight.data.device
+
+        w_orig = self.weight.data.float()
+        w_up = self.lora_layer.up.weight.data.float()
+        w_down = self.lora_layer.down.weight.data.float()
+        w_magnitude = self.lora_layer.magnitude.data.float()
+
+        if self.lora_layer.network_alpha is not None:
+            w_up = w_up * self.lora_layer.network_alpha / self.lora_layer.rank
+
+        lora = torch.mm(w_up, w_down)
+        adapted = w_orig + lora
+
+        column_norm: torch.Tensor = adapted.norm(p=2, dim=0, keepdim=True)
+        norm_lora = lora / column_norm.detach()
+        fused_weight = w_orig + lora_scale * w_magnitude * norm_lora
+
+        if safe_fusing and torch.isnan(fused_weight).any().item():
+            raise ValueError(
+                "This DoRA weight seems to be broken. "
+                f"Encountered NaN values when trying to fuse DoRA weights for {self}."
+                "DoRA weights will not be fused."
+            )
+
+        self.weight.data = fused_weight.to(device=device, dtype=dtype)
+
+        # we can drop the lora layer now
+        self.lora_layer = None
+
+        # offload the up and down matrices to CPU to not blow the memory
+        self.w_up = w_up.cpu()
+        self.w_down = w_down.cpu()
+        self.w_magnitude = w_magnitude.cpu()
+        self.w_norm_lora = norm_lora.cpu()
+        self._lora_scale = lora_scale
+
+    def _unfuse_lora(self):
+        if not (getattr(self, "w_up", None) is not None and getattr(self, "w_down", None) is not None and 
+                getattr(self, "w_magnitude", None) is not None and getattr(self, "w_norm_lora", None) is not None):
+            return
+
+        fused_weight = self.weight.data
+        dtype, device = fused_weight.data.dtype, fused_weight.data.device
+
+        w_magnitude: torch.Tensor = self.w_magnitude.to(device).float()
+        w_norm_lora: torch.Tensor = self.w_norm_lora.to(device).float()
+
+        unfused_weight = self.weight - self._lora_scale * w_magnitude * w_norm_lora
+        self.weight.data = unfused_weight.to(device=device, dtype=dtype)
+
+        self.w_up = None
+        self.w_down = None
+        self.w_magnitude = None
+        self.w_norm_lora = None
+
+    def forward(self, hidden_states: torch.Tensor, scale: float = 1.0) -> torch.Tensor:
+        weight = self.weight if self.lora_layer is None else self.weight + scale * self.lora_layer(self.weight)
+
+        return F.linear(hidden_states, weight, self.bias)
+
+
 class ControlLoRAModel(ControlNetModel):
     """
     A ControlLoRA model.
@@ -149,6 +460,7 @@ class ControlLoRAModel(ControlNetModel):
         lora_conv2d_rank: int = 0,
         use_conditioning_latent: bool = False,
         use_same_level_conditioning_latent: bool = False,
+        use_dora: bool = False,
     ):
         if use_conditioning_latent:
             conditioning_channels = in_channels
@@ -198,14 +510,19 @@ class ControlLoRAModel(ControlNetModel):
             self.controlnet_cond_embedding = lambda _: 0
             self.config['use_conditioning_latent'] = False
 
+        conv_cls = DoRACompatibleConv if use_dora else LoRACompatibleConv
+        conv_lora_cls = DoRAConv2dLayer if use_dora else LoRAConv2dLayer
+        linear_cls = DoRACompatibleLinear if use_dora else LoRACompatibleLinear
+        linear_lora_cls = DoRALinearLayer if use_dora else LoRALinearLayer
+
         # Initialize lora layers
         modules = { name: layer for name, layer in self.named_modules() if name.split('.')[0] in self._skip_layers }
         for name, attn_processor in list(modules.items()):
             branches = name.split('.')
             basename = branches.pop(-1)
             parent_layer = modules.get('.'.join(branches), self)
-            if isinstance(attn_processor, nn.Conv2d) and not isinstance(attn_processor, LoRACompatibleConv):
-                attn_processor = LoRACompatibleConv(
+            if isinstance(attn_processor, nn.Conv2d):
+                attn_processor = conv_cls(
                     attn_processor.in_channels,
                     attn_processor.out_channels,
                     attn_processor.kernel_size,
@@ -214,20 +531,20 @@ class ControlLoRAModel(ControlNetModel):
                     bias=False if attn_processor.bias is None else True
                 )
                 setattr(parent_layer, basename, attn_processor)
-            if isinstance(attn_processor, nn.Linear) and not isinstance(attn_processor, LoRACompatibleLinear):
-                attn_processor = LoRACompatibleLinear(
+            if isinstance(attn_processor, nn.Linear):
+                attn_processor = linear_cls(
                     attn_processor.in_features,
                     attn_processor.out_features,
                     bias=False if attn_processor.bias is None else True
                 )
                 setattr(parent_layer, basename, attn_processor)
 
-            if lora_conv2d_rank > 0 and isinstance(attn_processor, LoRACompatibleConv):
+            if lora_conv2d_rank > 0 and isinstance(attn_processor, conv_cls):
                 in_features = attn_processor.in_channels
                 out_features = attn_processor.out_channels
                 kernel_size = attn_processor.kernel_size
 
-                lora_layer = LoRAConv2dLayer(
+                lora_layer = conv_lora_cls(
                     in_features=in_features,
                     out_features=out_features,
                     rank=lora_linear_rank,
@@ -238,8 +555,8 @@ class ControlLoRAModel(ControlNetModel):
                 )
                 attn_processor.set_lora_layer(lora_layer)
             
-            elif lora_linear_rank > 0 and isinstance(attn_processor, LoRACompatibleLinear):
-                lora_layer = LoRALinearLayer(
+            elif lora_linear_rank > 0 and isinstance(attn_processor, linear_cls):
+                lora_layer = linear_lora_cls(
                     in_features=attn_processor.in_features,
                     out_features=attn_processor.out_features,
                     rank=lora_linear_rank,
@@ -293,6 +610,7 @@ class ControlLoRAModel(ControlNetModel):
         lora_conv2d_rank: int = 0,
         use_conditioning_latent: bool = False,
         use_same_level_conditioning_latent: bool = False,
+        use_dora: bool = False,
     ):
         r"""
         Instantiate a [`ControlNetModel`] from [`UNet2DConditionModel`].
@@ -346,6 +664,7 @@ class ControlLoRAModel(ControlNetModel):
             lora_conv2d_rank=lora_conv2d_rank,
             use_conditioning_latent=use_conditioning_latent,
             use_same_level_conditioning_latent=use_same_level_conditioning_latent,
+            use_dora=use_dora,
         )
 
         controllora.tie_weights(unet)

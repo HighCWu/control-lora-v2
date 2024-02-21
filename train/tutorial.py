@@ -16,13 +16,12 @@ config.report_to = "wandb"
 config.resume_from_checkpoint = "latest"
 # config.push_to_hub = True
 
-config.dataset_name = "multimodalart/facesyntheticsspigacaptioned"
-config.conditioning_image_column = "spiga_seg"
-config.image_column = "image"
-config.caption_column = "image_caption"
-config.validation_image = ["./docs/imgs/face_landmarks1.jpeg", "./docs/imgs/face_landmarks2.jpeg", "./docs/imgs/face_landmarks3.jpeg"]
-config.validation_prompt = ["High-quality close-up dslr photo of man wearing a hat with trees in the background", "Girl smiling, professional dslr photograph, dark background, studio lights, high quality", "Portrait of a clown face, oil on canvas, bittersweet expression"]
-config.conditioning_type_name = "face-landmarks"
+config.custom_dataset = "custom_datasets.tutorial.MyDataset"
+config.conditioning_image_column = "hint"
+config.image_column = "jpg"
+config.caption_column = "txt"
+config.num_validation_samples = 3
+config.conditioning_type_name = "fill50k"
 
 config.tracker_project_name = f"sd-control-lora-{config.conditioning_type_name}"
 config.output_dir = f"output/{config.tracker_project_name}"

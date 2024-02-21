@@ -160,11 +160,12 @@ cython_debug/
 #.idea/
 
 # Extra
-.cache
 tmp*
-multimodalart
-runwayml
-HighCWu
-wandb
-output
-ckpt
+/.cache
+/multimodalart
+/runwayml
+/HighCWu
+/wandb
+/output
+/ckpt
+/data

@@ -7,6 +7,7 @@ import random
 import shutil
 import logging
 import argparse
+import importlib
 from PIL import Image
 from pathlib import Path
 from tqdm.auto import tqdm
@@ -43,6 +44,7 @@ from diffusers.utils import check_min_version, is_wandb_available
 from diffusers.utils.import_utils import is_xformers_available
 
 import utils
+from custom_datasets import CustomDataset
 from models.control_lora import ControlLoRAModel
 
 
@@ -112,7 +114,7 @@ def log_validation(vae, text_encoder, tokenizer, unet, control_lora, args, accel
     image_logs = []
 
     for validation_prompt, validation_image in zip(validation_prompts, validation_images):
-        validation_image = Image.open(validation_image).convert("RGB")
+        validation_image = (validation_image if isinstance(validation_image, Image.Image) else Image.open(validation_image)).convert("RGB")
 
         images = []
 
@@ -312,6 +314,9 @@ def parse_args(input_args=None):
     )
     parser.add_argument(
         "--use_same_level_conditioning_latent", action="store_true", help="Whether or not to use conditioning latent with the same tensor size as the unet input."
+    )
+    parser.add_argument(
+        "--use_dora", action="store_true", help="Whether or not to use dora instead of lora."
     )
     parser.add_argument(
         "--revision",
@@ -530,6 +535,14 @@ def parse_args(input_args=None):
         ),
     )
     parser.add_argument(
+        "--custom_dataset",
+        type=str,
+        default=None,
+        help=(
+            "Custom dataset created by yourself."
+        ),
+    )
+    parser.add_argument(
         "--image_column", type=str, default="image", help="The column of the dataset containing the target image."
     )
     parser.add_argument(
@@ -583,6 +596,15 @@ def parse_args(input_args=None):
         ),
     )
     parser.add_argument(
+        "--num_validation_samples",
+        type=int,
+        default=0,
+        help=(
+            "Number of the validation_prompt and validation_image sampled from training dataset while"
+            " `--validation_prompt=None` and `--validation_image=None`."
+        ),
+    )
+    parser.add_argument(
         "--num_validation_images",
         type=int,
         default=4,
@@ -622,11 +644,11 @@ def parse_args(input_args=None):
     return args
 
 def check_args(args):
-    if args.dataset_name is None and args.train_data_dir is None:
-        raise ValueError("Specify either `--dataset_name` or `--train_data_dir`")
+    if args.custom_dataset is None and args.dataset_name is None and args.train_data_dir is None:
+        raise ValueError("Specify `--custom_dataset`, `--dataset_name` or `--train_data_dir`")
 
-    if args.dataset_name is not None and args.train_data_dir is not None:
-        raise ValueError("Specify only one of `--dataset_name` or `--train_data_dir`")
+    if args.custom_dataset is not None and args.dataset_name is not None and args.train_data_dir is not None:
+        raise ValueError("Specify only one of `--custom_dataset`, `--dataset_name` or `--train_data_dir`")
 
     if args.proportion_empty_prompts < 0 or args.proportion_empty_prompts > 1:
         raise ValueError("`--proportion_empty_prompts` must be in the range [0, 1].")
@@ -657,6 +679,11 @@ def check_args(args):
 def make_train_dataset(args, tokenizer, accelerator):
     # Get the datasets: you can either provide your own training and evaluation files (see below)
     # or specify a Dataset from the hub (the dataset will be downloaded automatically from the datasets Hub).
+    if args.custom_dataset is not None:
+        if isinstance(args.custom_dataset, str):
+            custom_dataset_split = args.custom_dataset.split('.')
+            args.custom_dataset = getattr(importlib.import_module('.'.join(custom_dataset_split[:-1])), custom_dataset_split[-1])()
+        return CustomDataset(args.custom_dataset, args, tokenizer)
 
     # In distributed training, the load_dataset function guarantees that only one local process can concurrently
     # download the dataset.
@@ -863,7 +890,8 @@ def main(args):
             lora_linear_rank=args.control_lora_linear_rank, 
             lora_conv2d_rank=args.control_lora_conv2d_rank,
             use_conditioning_latent=args.use_conditioning_latent,
-            use_same_level_conditioning_latent=args.use_same_level_conditioning_latent
+            use_same_level_conditioning_latent=args.use_same_level_conditioning_latent,
+            use_dora=args.use_dora,
         )
 
     # `accelerate` 0.16.0 will have better support for customized saving
@@ -1076,6 +1104,35 @@ def main(args):
         # Only show the progress bar once on each machine.
         disable=not accelerator.is_local_main_process,
     )
+
+    if accelerator.is_main_process:
+        if args.validation_prompt is None and args.num_validation_samples > 0:
+            validation_prompt = []
+            validation_image = []
+            for step, batch in enumerate(train_dataloader):
+                validation_prompt.extend([
+                    tokenizer.convert_tokens_to_string(
+                        tokenizer.convert_ids_to_tokens(
+                            ids.cpu().numpy().tolist(), 
+                            skip_special_tokens=True
+                        )
+                    ) 
+                    for ids in batch["input_ids"]
+                ])
+                validation_image.extend([
+                    Image.fromarray(
+                        (tensor * 255.0)
+                        .clamp(0, 255).detach().cpu().numpy()
+                        .transpose(1,2,0).astype(np.uint8)
+                    ) 
+                    for tensor in batch["conditioning_pixel_values"]
+                ])
+                if len(validation_prompt) >= args.num_validation_samples:
+                    break
+            validation_prompt = validation_prompt[:args.num_validation_samples]
+            validation_image = validation_image[:args.num_validation_samples]
+            args.validation_prompt = validation_prompt
+            args.validation_image = validation_image
 
     image_logs = None
     for epoch in range(first_epoch, args.num_train_epochs):
