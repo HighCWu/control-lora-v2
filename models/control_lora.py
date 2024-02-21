@@ -79,12 +79,11 @@ class DoRAConv2dLayer(LoRAConv2dLayer):
 
         self.magnitude = nn.Parameter(torch.ones(1, in_features, *self.down.kernel_size))
         self.magnitude_initialized = False
-        self.magnitude_initial_value = None
 
     def forward(self, w_orig: torch.Tensor, scale: float = 1.0) -> torch.Tensor:
         if not self.magnitude_initialized:
             w_norm: torch.Tensor = w_orig.flatten(start_dim=1).norm(p=2, dim=0, keepdim=True)
-            self.magnitude.data[:] = w_norm.view_as(self.magnitude)
+            self.magnitude.data = w_norm.view_as(self.magnitude)
             self.magnitude_initialized = True
         
         w_up = self.up.weight
@@ -96,8 +95,8 @@ class DoRAConv2dLayer(LoRAConv2dLayer):
         lora = torch.mm(w_up.flatten(start_dim=1), w_down.flatten(start_dim=1))
         adapted = w_orig.flatten(start_dim=1) + lora
 
-        column_norm: torch.Tensor = adapted.norm(p=2, dim=0, keepdim=True)
-        norm_lora = lora / column_norm.detach()
+        weight_norm: torch.Tensor = adapted.norm(p=2, dim=0, keepdim=True)
+        norm_lora = lora / weight_norm.detach()
 
         return scale * self.magnitude * norm_lora.view_as(w_orig)
     
@@ -143,8 +142,8 @@ class DoRACompatibleConv(LoRACompatibleConv):
         lora = torch.mm(w_up.flatten(start_dim=1), w_down.flatten(start_dim=1))
         adapted = w_orig.flatten(start_dim=1) + lora
 
-        column_norm: torch.Tensor = adapted.norm(p=2, dim=0, keepdim=True)
-        norm_lora = lora / column_norm.detach()
+        weight_norm: torch.Tensor = adapted.norm(p=2, dim=0, keepdim=True)
+        norm_lora = lora / weight_norm.detach()
         fused_weight = w_orig + lora_scale * w_magnitude * norm_lora.view_as(w_orig)
 
         if safe_fusing and torch.isnan(fused_weight).any().item():
@@ -238,7 +237,7 @@ class DoRALinearLayer(LoRALinearLayer):
     def forward(self, w_orig: torch.Tensor, scale: float = 1.0) -> torch.Tensor:
         if not self.magnitude_initialized:
             w_norm: torch.Tensor = w_orig.norm(p=2, dim=0, keepdim=True)
-            self.magnitude.data[:] = w_norm
+            self.magnitude.data = w_norm
             self.magnitude_initialized = True
         
         w_up = self.up.weight
@@ -250,8 +249,8 @@ class DoRALinearLayer(LoRALinearLayer):
         lora = torch.mm(w_up, w_down)
         adapted = w_orig + lora
 
-        column_norm: torch.Tensor = adapted.norm(p=2, dim=0, keepdim=True)
-        norm_lora = lora / column_norm.detach()
+        weight_norm: torch.Tensor = adapted.norm(p=2, dim=0, keepdim=True)
+        norm_lora = lora / weight_norm.detach()
 
         return scale * self.magnitude * norm_lora
     
@@ -297,8 +296,8 @@ class DoRACompatibleLinear(LoRACompatibleLinear):
         lora = torch.mm(w_up, w_down)
         adapted = w_orig + lora
 
-        column_norm: torch.Tensor = adapted.norm(p=2, dim=0, keepdim=True)
-        norm_lora = lora / column_norm.detach()
+        weight_norm: torch.Tensor = adapted.norm(p=2, dim=0, keepdim=True)
+        norm_lora = lora / weight_norm.detach()
         fused_weight = w_orig + lora_scale * w_magnitude * norm_lora
 
         if safe_fusing and torch.isnan(fused_weight).any().item():
