@@ -244,21 +244,24 @@ from PIL import Image
 from diffusers import StableDiffusionControlNetPipeline, UNet2DConditionModel, UniPCMultistepScheduler
 from models.control_lora import ControlLoRAModel
 
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+dtype = torch.float16 if torch.cuda.is_available() else torch.float32
+
 image = Image.open('<Your Conditioning Image Path>')
 
 base_model = "{base_model}"
 
 unet = UNet2DConditionModel.from_pretrained(
-    base_model, subfolder="unet", torch_dtype=torch.float16
+    base_model, subfolder="unet", torch_dtype=dtype
 )
 control_lora: ControlLoRAModel = ControlLoRAModel.from_pretrained(
-    "{repo_id}", torch_dtype=torch.float16
+    "{repo_id}", torch_dtype=dtype
 )
 control_lora.tie_weights(unet)
 
 pipe = StableDiffusionControlNetPipeline.from_pretrained(
-    base_model, unet=unet, controlnet=control_lora, safety_checker=None, torch_dtype=torch.float16
-)
+    base_model, unet=unet, controlnet=control_lora, safety_checker=None, torch_dtype=dtype
+).to(device)
 control_lora.bind_vae(pipe.vae)
 
 pipe.scheduler = UniPCMultistepScheduler.from_config(pipe.scheduler.config)
@@ -268,7 +271,7 @@ pipe.scheduler = UniPCMultistepScheduler.from_config(pipe.scheduler.config)
 # for installation instructions
 pipe.enable_xformers_memory_efficient_attention()
 
-pipe.enable_model_cpu_offload()
+# pipe.enable_model_cpu_offload()
 
 image = pipe("Girl smiling, professional dslr photograph, high quality", image, num_inference_steps=20).images[0]
 

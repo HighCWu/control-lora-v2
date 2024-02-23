@@ -1,0 +1,1 @@
+python -m infer.face_landmarks

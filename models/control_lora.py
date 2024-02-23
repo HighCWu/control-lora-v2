@@ -79,11 +79,17 @@ class DoRAConv2dLayer(LoRAConv2dLayer):
 
         self.magnitude = nn.Parameter(torch.ones(1, in_features, *self.down.kernel_size))
         self.magnitude_initialized = False
+        self.register_buffer('magnitude_initialized_buf', torch.tensor(False))
 
     def forward(self, w_orig: torch.Tensor, scale: float = 1.0) -> torch.Tensor:
+        if self.up.weight.device != w_orig.device or self.up.weight.dtype != w_orig.dtype:
+            self.to(w_orig)
+        
         if not self.magnitude_initialized:
-            w_norm: torch.Tensor = w_orig.flatten(start_dim=1).norm(p=2, dim=0, keepdim=True)
-            self.magnitude.data = w_norm.view_as(self.magnitude)
+            if not self.magnitude_initialized_buf.item():
+                w_norm: torch.Tensor = w_orig.flatten(start_dim=1).norm(p=2, dim=0, keepdim=True)
+                self.magnitude.data = w_norm.view_as(self.magnitude)
+                self.magnitude_initialized_buf.data = ~self.magnitude_initialized_buf
             self.magnitude_initialized = True
         
         w_up = self.up.weight
@@ -91,6 +97,10 @@ class DoRAConv2dLayer(LoRAConv2dLayer):
 
         if self.network_alpha is not None:
             w_up = w_up * self.network_alpha / self.rank
+        
+        if w_up.device == torch.device('cpu') and (w_up.dtype == torch.float16 or w_up.dtype == torch.bfloat16):
+            w_up = w_up.float()
+            w_down = w_down.float()
 
         lora = torch.mm(w_up.flatten(start_dim=1), w_down.flatten(start_dim=1))
         adapted = w_orig.flatten(start_dim=1) + lora
@@ -99,24 +109,6 @@ class DoRAConv2dLayer(LoRAConv2dLayer):
         norm_lora = lora / weight_norm.detach()
 
         return scale * self.magnitude * norm_lora.view_as(w_orig)
-    
-    def state_dict(self, *args, **kwargs):
-        state_dict: Mapping[str, Any] = super().state_dict(*args, **kwargs)
-        new_state_dict = OrderedDict()
-        for k, v in state_dict.items():
-            if k != 'magnitude' or self.magnitude_initialized:
-                new_state_dict[k] = v
-        return new_state_dict
-    
-    def load_state_dict(self, state_dict: Mapping[str, Any], strict: bool = True):
-        new_state_dict = OrderedDict(state_dict)
-        default_state_dict = super().state_dict()
-        if 'magnitude' not in state_dict:
-            new_state_dict['magnitude'] = default_state_dict['magnitude']
-        incompatible_keys = super().load_state_dict(new_state_dict, strict)
-        if 'magnitude' in state_dict:
-            self.magnitude_initialized = True
-        return incompatible_keys
 
 
 class DoRACompatibleConv(LoRACompatibleConv):
@@ -185,6 +177,8 @@ class DoRACompatibleConv(LoRACompatibleConv):
         self.w_norm_lora = None
 
     def forward(self, hidden_states: torch.Tensor, scale: float = 1.0) -> torch.Tensor:
+        if self.weight.device != hidden_states.device:
+            self.to(hidden_states.device)
         weight = self.weight if self.lora_layer is None else self.weight + scale * self.lora_layer(self.weight)
 
         return F.conv2d(
@@ -233,44 +227,36 @@ class DoRALinearLayer(LoRALinearLayer):
 
         self.magnitude = nn.Parameter(torch.ones(1, in_features))
         self.magnitude_initialized = False
+        self.register_buffer('magnitude_initialized_buf', torch.tensor(False))
 
     def forward(self, w_orig: torch.Tensor, scale: float = 1.0) -> torch.Tensor:
-        if not self.magnitude_initialized:
-            w_norm: torch.Tensor = w_orig.norm(p=2, dim=0, keepdim=True)
-            self.magnitude.data = w_norm
-            self.magnitude_initialized = True
+        if self.up.weight.device != w_orig.device or self.up.weight.dtype != w_orig.dtype:
+            self.to(w_orig)
         
+        if not self.magnitude_initialized:
+            if not self.magnitude_initialized_buf.item():
+                w_norm: torch.Tensor = w_orig.norm(p=2, dim=0, keepdim=True)
+                self.magnitude.data = w_norm
+                self.magnitude_initialized_buf.data = ~self.magnitude_initialized_buf
+            self.magnitude_initialized = True
+
         w_up = self.up.weight
         w_down = self.down.weight
 
         if self.network_alpha is not None:
             w_up = w_up * self.network_alpha / self.rank
+        
+        if w_up.device == torch.device('cpu') and (w_up.dtype == torch.float16 or w_up.dtype == torch.bfloat16):
+            w_up = w_up.float()
+            w_down = w_down.float()
 
-        lora = torch.mm(w_up, w_down)
+        lora = torch.mm(w_up, w_down).to(w_orig)
         adapted = w_orig + lora
 
         weight_norm: torch.Tensor = adapted.norm(p=2, dim=0, keepdim=True)
         norm_lora = lora / weight_norm.detach()
 
         return scale * self.magnitude * norm_lora
-    
-    def state_dict(self, *args, **kwargs):
-        state_dict: Mapping[str, Any] = super().state_dict(*args, **kwargs)
-        new_state_dict = OrderedDict()
-        for k, v in state_dict.items():
-            if k != 'magnitude' or self.magnitude_initialized:
-                new_state_dict[k] = v
-        return new_state_dict
-    
-    def load_state_dict(self, state_dict: Mapping[str, Any], strict: bool = True):
-        new_state_dict = OrderedDict(state_dict)
-        default_state_dict = super().state_dict()
-        if 'magnitude' not in state_dict:
-            new_state_dict['magnitude'] = default_state_dict['magnitude']
-        incompatible_keys = super().load_state_dict(new_state_dict, strict)
-        if 'magnitude' in state_dict:
-            self.magnitude_initialized = True
-        return incompatible_keys
 
 
 class DoRACompatibleLinear(LoRACompatibleLinear):
@@ -339,6 +325,8 @@ class DoRACompatibleLinear(LoRACompatibleLinear):
         self.w_norm_lora = None
 
     def forward(self, hidden_states: torch.Tensor, scale: float = 1.0) -> torch.Tensor:
+        if self.weight.device != hidden_states.device:
+            self.to(hidden_states.device)
         weight = self.weight if self.lora_layer is None else self.weight + scale * self.lora_layer(self.weight)
 
         return F.linear(hidden_states, weight, self.bias)
